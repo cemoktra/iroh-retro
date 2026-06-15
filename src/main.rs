@@ -25,7 +25,7 @@ fn main() {
 
         leptos::view! {
             <div style:min-height="100vh">
-                <Router>
+                <Router base="/iroh-retro">
                     <Routes fallback=|| "404. Not found.">
                         <Route path=path!("/") view=LandingPage />
                         <Route path=path!("/session/:id") view=RetroPage />
