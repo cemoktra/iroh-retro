@@ -40,3 +40,6 @@ rustup target add wasm32-unknown-unknown
 
 # Install Trunk if not already present
 cargo install --locked trunk
+
+trunk serve --public-url / --open
+```
