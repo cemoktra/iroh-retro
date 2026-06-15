@@ -34,6 +34,9 @@ jobs:
       - name: Build with Trunk
         run: trunk build --release
 
+      - name: Create 404 Fallback for SPA Routing
+        run: cp dist/index.html dist/404.html
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
