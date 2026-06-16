@@ -10,6 +10,7 @@
     --grey: #928374;
     --red: #cc241d;
     --green: #98971a;
+    --yellow: #d79921;
 }
 
 :root[data-theme="light"] {
@@ -23,6 +24,7 @@
     --grey: #928374;
     --red: #cc241d;
     --green: #98971a;
+    --yellow: #d79921;
 }
 
 body {
@@ -106,10 +108,25 @@ input:invalid {
     color: var(--fg);
 }
 
-.retro-header-github-icon {
+.filled-icon {
     width: 1.3rem;
     height: 1.3rem;
-    fill: currentColor;
+    fill: var(--grey);
+    stroke: var(--grey);
+}
+
+.nonfilled-icon {
+    width: 1.3rem;
+    height: 1.3rem;
+    fill: none;
+    stroke: var(--grey);
+}
+
+.yellow-icon {
+    width: 1.3rem;
+    height: 1.3rem;
+    fill: var(--yellow);
+    stroke: var(--yellow);
 }
 
 .retro-header-center {
@@ -235,6 +252,7 @@ input:invalid {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 0.45rem;
     box-sizing: border-box;
     white-space: nowrap;
 }
