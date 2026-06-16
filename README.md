@@ -21,10 +21,10 @@ There is no registration required, no central database, and zero server infrastr
 
 ## Tech Stack
 
+* **Language:** Rust
 * **Frontend Framework:** Leptos (Rust WebAssembly Framework)
 * **P2P Networking:** Iroh (For direct end-to-end connections)
 * **Build Tool:** Trunk (WASM bundler for Rust)
-* **Language:** Rust
 
 ---
 
@@ -41,5 +41,6 @@ rustup target add wasm32-unknown-unknown
 # Install Trunk if not already present
 cargo install --locked trunk
 
+# Server and watch
 trunk serve --open
 ```

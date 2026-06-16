@@ -26,20 +26,24 @@ pub(crate) enum Error {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum NodeMessages {
-    Hello {
-        endpoint_id: EndpointId,
-        name: String,
-    },
-    Welcome {
-        endpoint_id: EndpointId,
-        name: String,
-    },
-    NameUpdate {
-        endpoint_id: EndpointId,
-        old_name: String,
-        new_name: String,
-    },
+pub enum NodeMessage {
+    Peer(PeerCommand),
+    Connection(ConnectionEvent),
+    Note(NoteCommand),
+    ActionItem(ActionItemCommand),
+    Session(SessionCommand),
+    Timer(TimerCommand),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerCommand {
+    pub endpoint_id: EndpointId,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "camelCase")]
+pub enum ConnectionEvent {
     Accepted {
         endpoint_id: EndpointId,
     },
@@ -47,22 +51,71 @@ pub enum NodeMessages {
         endpoint_id: EndpointId,
         error: Option<String>,
     },
-    CreateNote {
-        id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteCommand {
+    pub note_id: String,
+    pub command: NoteMutation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub enum NoteMutation {
+    Create {
         content: String,
         category: String,
         author: String,
+        author_id: EndpointId,
     },
-    VoteToggle {
-        note_id: String,
+    Edit {
+        new_content: String,
+    },
+    Delete,
+    ToggleVote {
         peer_id: EndpointId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionItemCommand {
+    pub id: String,
+    pub command: ActionItemMutation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub enum ActionItemMutation {
+    Create {
+        content: String,
+    },
+    Delete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub enum SessionCommand {
+    RequestState {
+        requester_id: EndpointId,
+    },
+    StateSnapshot {
+        requester_id: EndpointId,
+        state: crate::models::SessionState,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub enum TimerCommand {
+    Update {
+        timer: crate::models::TimerState,
     },
 }
 
 #[derive(Clone)]
 pub(crate) struct RetroNode {
     router: iroh::protocol::Router,
-    accept_events: broadcast::Sender<NodeMessages>,
+    accept_events: broadcast::Sender<NodeMessage>,
     peers: Arc<Mutex<HashMap<EndpointId, iroh::endpoint::Connection>>>,
     pub endpoint_id: EndpointId,
 }
@@ -107,7 +160,7 @@ impl RetroNode {
         let (event_sender, _) = broadcast::channel(256);
         let peers = Arc::new(Mutex::new(HashMap::new()));
 
-        peers.lock().await.insert(pk.into(), connection.clone());
+        peers.lock().await.insert(pk, connection.clone());
 
         let handler = RetroHandler::new(event_sender.clone(), peers.clone());
         let router = iroh::protocol::Router::builder(endpoint.clone())
@@ -130,25 +183,42 @@ impl RetroNode {
         })
     }
 
-    pub fn accept_events(&self) -> BoxStream<NodeMessages> {
+    pub fn accept_events(&self) -> BoxStream<NodeMessage> {
         let receiver = self.accept_events.subscribe();
         Box::pin(BroadcastStream::new(receiver).filter_map(|event| event.ok()))
     }
 
-    pub async fn broadcast(&self, msg: &NodeMessages) {
+    pub async fn broadcast(&self, msg: &NodeMessage) {
         let peers = self.peers.lock().await;
         let payload = serde_json::to_vec(msg).unwrap();
 
         tracing::info!("Sending broadcast message to {} peers", peers.len());
         for (id, conn) in peers.iter() {
             if let Ok((mut send, _recv)) = conn.open_bi().await {
-                if let Ok(_) = send.write_all(&payload).await {
+                if send.write_all(&payload).await.is_ok() {
                     let _ = send.finish();
                     tracing::info!("Message transmitted to peer {id}");
                 }
             } else {
                 tracing::error!("Failed to open bi-directional stream to peer {id}");
             }
+        }
+    }
+
+    pub async fn send_to(&self, peer_id: EndpointId, msg: &NodeMessage) {
+        let peers = self.peers.lock().await;
+        let Some(conn) = peers.get(&peer_id) else {
+            tracing::warn!("Cannot send message, peer {peer_id} not found");
+            return;
+        };
+
+        let payload = serde_json::to_vec(msg).unwrap();
+        if let Ok((mut send, _recv)) = conn.open_bi().await {
+            if send.write_all(&payload).await.is_ok() {
+                let _ = send.finish();
+            }
+        } else {
+            tracing::error!("Failed to open bi-directional stream to peer {peer_id}");
         }
     }
 
@@ -159,13 +229,13 @@ impl RetroNode {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RetroHandler {
-    event_sender: broadcast::Sender<NodeMessages>,
+    event_sender: broadcast::Sender<NodeMessage>,
     peers: Arc<Mutex<HashMap<EndpointId, iroh::endpoint::Connection>>>,
 }
 
 impl RetroHandler {
     pub(crate) fn new(
-        event_sender: broadcast::Sender<NodeMessages>,
+        event_sender: broadcast::Sender<NodeMessage>,
         peers: Arc<Mutex<HashMap<EndpointId, iroh::endpoint::Connection>>>,
     ) -> Self {
         Self {
@@ -187,7 +257,9 @@ impl RetroHandler {
 
         let _ = self
             .event_sender
-            .send(NodeMessages::Accepted { endpoint_id });
+            .send(NodeMessage::Connection(ConnectionEvent::Accepted {
+                endpoint_id,
+            }));
 
         let res =
             Self::listen_to_connection(connection, self.event_sender.clone(), self.peers.clone())
@@ -197,13 +269,16 @@ impl RetroHandler {
         let error = res.as_ref().err().map(|err| err.to_string());
         let _ = self
             .event_sender
-            .send(NodeMessages::Closed { endpoint_id, error });
+            .send(NodeMessage::Connection(ConnectionEvent::Closed {
+                endpoint_id,
+                error,
+            }));
         res
     }
 
     pub async fn listen_to_connection(
         connection: iroh::endpoint::Connection,
-        event_sender: broadcast::Sender<NodeMessages>,
+        event_sender: broadcast::Sender<NodeMessage>,
         peers: Arc<Mutex<HashMap<EndpointId, iroh::endpoint::Connection>>>,
     ) -> std::result::Result<(), iroh::protocol::AcceptError> {
         let sender_id = connection.remote_id();
@@ -219,7 +294,7 @@ impl RetroHandler {
                 break;
             }
 
-            if let Ok(msg) = serde_json::from_slice::<NodeMessages>(&buffer) {
+            if let Ok(msg) = serde_json::from_slice::<NodeMessage>(&buffer) {
                 tracing::info!("received message from {}: {:?}", sender_id, msg);
                 let _ = event_sender.send(msg.clone());
 
@@ -227,12 +302,11 @@ impl RetroHandler {
                 if peers_lock.len() > 1 {
                     let payload = serde_json::to_vec(&msg).unwrap();
                     for (id, conn) in peers_lock.iter() {
-                        if *id != sender_id {
-                            if let Ok((mut s_send, _)) = conn.open_bi().await {
-                                if let Ok(_) = s_send.write_all(&payload).await {
-                                    let _ = s_send.finish();
-                                }
-                            }
+                        if *id != sender_id
+                            && let Ok((mut s_send, _)) = conn.open_bi().await
+                            && s_send.write_all(&payload).await.is_ok()
+                        {
+                            let _ = s_send.finish();
                         }
                     }
                 }
